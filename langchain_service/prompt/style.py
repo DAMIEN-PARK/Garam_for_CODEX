@@ -40,8 +40,9 @@ def build_system_prompt(style: Style, **flags) -> str:
     1) If the user asks in English, respond only in English. Do not mix in Korean.
     2) If the user asks in Korean, respond only in Korean (use polite honorifics). Do not mix in English.
     3) If the question is mixed-language, use the language of the last sentence as the output language.
-    4) Even if sources are in a different language, write the final response body in the output language.
+    4) Even if sources or retrieved context are in a different language, write the final response body in the output language.
        - Quotes or verbatim excerpts may remain in the original language, but your explanation must use the output language.
+    5) Never let the context language override the user's requested output language. Follow the user's question language only.
 
     [Prohibited]
     - Translating an English question into Korean or explaining in Korean.

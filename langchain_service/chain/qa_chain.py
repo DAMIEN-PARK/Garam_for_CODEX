@@ -165,6 +165,7 @@ def make_qa_chain(
         + "- Do not output JSON-only. Respond in normal sentences with lists.\n"
         + "- Ground your answer strictly in the provided context.\n"
         + "- Respond in the same language as the question (Korean/English/Chinese/Japanese).\n"
+        + "- Do not switch output language based on the context language; follow the user's question language only.\n"
         + "- If the context is insufficient, do not end with 'no information'; switch to a clarifying question.\n"
         + "- If force_clarify is True, output only a clarifying question instead of an answer.\n"
         + "- Use only the URLs in the [SOURCES] section for download/external links.\n"
