@@ -16,6 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from crud import model as crud_model
 from service.knowledge_retrieval import retrieve_topk_hybrid
 from langchain_service.prompt.style import build_system_prompt, llm_params, STYLE_MAP
+from langchain_service.llm.translator import detect_language, needs_translation, language_label
 from langchain_service.prompt.few_shots import load_few_shot_profile, few_shot_messages
 from core import config
 
@@ -165,6 +166,7 @@ def make_qa_chain(
         + "- Do not output JSON-only. Respond in normal sentences with lists.\n"
         + "- Ground your answer strictly in the provided context.\n"
         + "- Respond in the same language as the question (Korean/English/Chinese/Japanese).\n"
+        + "- Do not switch output language based on the context language; follow the user's question language only.\n"
         + "- If the context is insufficient, do not end with 'no information'; switch to a clarifying question.\n"
         + "- If force_clarify is True, output only a clarifying question instead of an answer.\n"
         + "- Use only the URLs in the [SOURCES] section for download/external links.\n"
@@ -329,10 +331,56 @@ def make_qa_chain(
         except Exception:
             pass
 
-    return (
+    answer_chain = (
         base
         | enrich
         | prompt
         | llm
         | StrOutputParser()
+    )
+
+    translator_prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You are a translation engine. Translate the text to {target_language}.\n"
+                "Preserve URLs, product names, and technical terms.\n"
+                "Keep Markdown formatting and list structure.\n"
+                "Do not add new information or omit content.\n"
+                "Never use code blocks.",
+            ),
+            ("human", "{text}"),
+        ]
+    )
+
+    translator_llm = get_llm(
+        provider=provider,
+        model=model,
+        temperature=0.0,
+        streaming=False,
+    )
+
+    if callbacks:
+        try:
+            translator_llm = translator_llm.with_config(callbacks=callbacks, run_name="translate_llm")
+        except Exception:
+            pass
+
+    translate_chain = translator_prompt | translator_llm | StrOutputParser()
+
+    def _translate_if_needed(payload: dict) -> str:
+        question = payload.get("question", "") or ""
+        answer = payload.get("answer", "") or ""
+        target_lang = detect_language(question)
+        if not answer:
+            return answer
+        if not needs_translation(answer, target_lang):
+            return answer
+        return translate_chain.invoke(
+            {"text": answer, "target_language": language_label(target_lang)}
+        )
+
+    return (
+        RunnableMap({"answer": answer_chain, "question": itemgetter("question")})
+        | RunnableLambda(_translate_if_needed)
     )
