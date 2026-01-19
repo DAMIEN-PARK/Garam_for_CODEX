@@ -3,14 +3,19 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from models.chat import ChatSession, Message
-from models.chat_history import ChatSessionInsight, ChatMessageInsight, ChatKeywordDaily
+from models.chat_history import (
+    ChatSessionInsight,
+    ChatMessageInsight,
+    ChatKeywordDaily,
+    KnowledgeSuggestion,
+)
 
 log = logging.getLogger("chat_history")
 
@@ -18,7 +23,9 @@ log = logging.getLogger("chat_history")
 # =========================
 # Helpers
 # =========================
-def _dt_range_utc(date_from: Optional[date], date_to: Optional[date]) -> Tuple[Optional[datetime], Optional[datetime]]:
+def _dt_range_utc(
+    date_from: Optional[date], date_to: Optional[date]
+) -> Tuple[Optional[datetime], Optional[datetime]]:
     """
     date_to는 inclusive로 받고, 쿼리는 [from, to+1day) 로 처리.
     """
@@ -27,7 +34,9 @@ def _dt_range_utc(date_from: Optional[date], date_to: Optional[date]) -> Tuple[O
     if date_from:
         dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
     if date_to:
-        dt_to_excl = datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=timezone.utc)
+        dt_to_excl = datetime.combine(
+            date_to + timedelta(days=1), time.min, tzinfo=timezone.utc
+        )
     return dt_from, dt_to_excl
 
 
@@ -67,19 +76,19 @@ def upsert_session_insight(
     session_id: int,
     started_at: Optional[datetime] = None,
     channel: Optional[str] = None,
-    category: Optional[str] = None,  # 캐시용 name (선택)
-    quick_category_id: Optional[int] = None,  # FK (권장)
-    status: Optional[str] = None,  # "success" | "failed"
+    category: Optional[str] = None,
+    quick_category_id: Optional[int] = None,
+    status: Optional[str] = None,
     first_question: Optional[str] = None,
     question_count: Optional[int] = None,
     failed_reason: Optional[str] = None,
 ) -> ChatSessionInsight:
     obj = db.get(ChatSessionInsight, session_id)
     if not obj:
-        # started_at 없으면 chat_session에서 채움
         sess = db.get(ChatSession, session_id)
         if not sess:
             raise ValueError(f"chat_session not found: {session_id}")
+
         obj = ChatSessionInsight(
             session_id=session_id,
             started_at=started_at or sess.created_at,
@@ -116,6 +125,11 @@ def upsert_session_insight(
     return obj
 
 
+from sqlalchemy import select, func
+
+# ... (imports / _dt_range_utc / ChatSessionInsight 등 기존 그대로)
+
+
 def list_session_insights(
     db: Session,
     *,
@@ -123,8 +137,8 @@ def list_session_insights(
     date_to: Optional[date] = None,
     status: Optional[str] = None,
     channel: Optional[str] = None,
-    category: Optional[str] = None,  # 캐시 name 필터(기존 호환)
-    quick_category_id: Optional[int] = None,  # FK 필터(권장)
+    category: Optional[str] = None,
+    quick_category_id: Optional[int] = None,
     q: Optional[str] = None,
     offset: int = 0,
     limit: int = 50,
@@ -144,14 +158,21 @@ def list_session_insights(
     if category:
         stmt = stmt.where(ChatSessionInsight.category == category)
     if quick_category_id is not None:
-        stmt = stmt.where(ChatSessionInsight.quick_category_id == int(quick_category_id))
+        stmt = stmt.where(
+            ChatSessionInsight.quick_category_id == int(quick_category_id)
+        )
     if q:
         like = f"%{q}%"
         stmt = stmt.where(
-            (ChatSessionInsight.first_question.ilike(like)) | (ChatSessionInsight.failed_reason.ilike(like))
+            (ChatSessionInsight.first_question.ilike(like))
+            | (ChatSessionInsight.failed_reason.ilike(like))
         )
 
-    stmt = stmt.order_by(ChatSessionInsight.started_at.desc()).offset(offset).limit(limit)
+    stmt = stmt.where(func.coalesce(ChatSessionInsight.question_count, 0) > 0)
+
+    stmt = (
+        stmt.order_by(ChatSessionInsight.started_at.desc()).offset(offset).limit(limit)
+    )
     return db.execute(stmt).scalars().all()
 
 
@@ -162,8 +183,8 @@ def count_session_insights(
     date_to: Optional[date] = None,
     status: Optional[str] = None,
     channel: Optional[str] = None,
-    category: Optional[str] = None,  # 캐시 name 필터(기존 호환)
-    quick_category_id: Optional[int] = None,  # FK 필터(권장)
+    category: Optional[str] = None,
+    quick_category_id: Optional[int] = None,
 ) -> int:
     stmt = select(func.count()).select_from(ChatSessionInsight)
 
@@ -180,7 +201,11 @@ def count_session_insights(
     if category:
         stmt = stmt.where(ChatSessionInsight.category == category)
     if quick_category_id is not None:
-        stmt = stmt.where(ChatSessionInsight.quick_category_id == int(quick_category_id))
+        stmt = stmt.where(
+            ChatSessionInsight.quick_category_id == int(quick_category_id)
+        )
+
+    stmt = stmt.where(func.coalesce(ChatSessionInsight.question_count, 0) > 0)
 
     return int(db.execute(stmt).scalar_one())
 
@@ -229,7 +254,6 @@ def upsert_message_insight(
 ) -> ChatMessageInsight:
     obj = db.get(ChatMessageInsight, message_id)
     if not obj:
-        # 필요한 필드 보강
         if session_id is None or created_at is None:
             msg = db.get(Message, message_id)
             if not msg:
@@ -237,7 +261,7 @@ def upsert_message_insight(
             session_id = session_id or msg.session_id
             created_at = created_at or msg.created_at
             if is_question is None:
-                is_question = (msg.role == "user")
+                is_question = msg.role == "user"
 
         obj = ChatMessageInsight(
             message_id=message_id,
@@ -290,15 +314,233 @@ def list_message_insights(
     if category:
         stmt = stmt.where(ChatMessageInsight.category == category)
 
-    # channel 필터는 session_insight join으로 처리(메시지 인사이트에 channel을 저장 안 했으니까)
     if channel:
         stmt = stmt.join(
             ChatSessionInsight,
             ChatSessionInsight.session_id == ChatMessageInsight.session_id,
         ).where(ChatSessionInsight.channel == channel)
 
-    stmt = stmt.order_by(ChatMessageInsight.created_at.desc()).offset(offset).limit(limit)
+    stmt = (
+        stmt.order_by(ChatMessageInsight.created_at.desc()).offset(offset).limit(limit)
+    )
     return db.execute(stmt).scalars().all()
+
+
+def get_knowledge_suggestion(
+    db: Session, suggestion_id: int
+) -> Optional[KnowledgeSuggestion]:
+    return db.get(KnowledgeSuggestion, suggestion_id)
+
+
+def get_knowledge_suggestion_by_message(
+    db: Session, message_id: int
+) -> Optional[KnowledgeSuggestion]:
+    stmt = select(KnowledgeSuggestion).where(
+        KnowledgeSuggestion.message_id == int(message_id)
+    )
+    return db.execute(stmt).scalars().first()
+
+
+# crud/chat_history.py (KnowledgeSuggestion upsert 부분만 교체해서 반영)
+def upsert_pending_knowledge_suggestion(
+    db: Session,
+    *,
+    session_id: int,
+    message_id: int,
+    question_text: str,
+    assistant_answer: Optional[str] = None,
+    reason_code: Optional[str] = None,
+    retrieval_meta: Optional[Dict[str, Any]] = None,
+    answer_status: str = "error",  # ok/error
+) -> KnowledgeSuggestion:
+    """
+    실패(error) 발생 시 pending으로 멱등 upsert.
+    - unique(message_id) 기준
+    - ingested/deleted는 절대 pending으로 되돌리지 않음
+    - 경쟁 상태에서도 안전하게 동작하도록 returning None 케이스 처리
+    """
+    existing = get_knowledge_suggestion_by_message(db, message_id)
+    if existing and existing.review_status in ("ingested", "deleted"):
+        return existing
+
+    stmt = (
+        pg_insert(KnowledgeSuggestion)
+        .values(
+            session_id=int(session_id),
+            message_id=int(message_id),
+            question_text=str(question_text),
+            assistant_answer=assistant_answer,
+            answer_status=str(answer_status),
+            review_status="pending",
+            reason_code=reason_code,
+            retrieval_meta=retrieval_meta,
+        )
+        .on_conflict_do_update(
+            index_elements=["message_id"],
+            set_={
+                "session_id": int(session_id),
+                "question_text": str(question_text),
+                "assistant_answer": assistant_answer,
+                "answer_status": str(answer_status),
+                "review_status": "pending",
+                "reason_code": reason_code,
+                "retrieval_meta": retrieval_meta,
+                "updated_at": func.now(),
+            },
+            where=(KnowledgeSuggestion.review_status == "pending"),
+        )
+        .returning(KnowledgeSuggestion.id)
+    )
+
+    new_id = db.execute(stmt).scalar_one_or_none()
+
+    if new_id is None:
+        obj = get_knowledge_suggestion_by_message(db, message_id)
+        if not obj:
+            raise ValueError("knowledge_suggestion upsert failed (no row)")
+        db.flush()
+        return obj
+
+    obj = db.get(KnowledgeSuggestion, int(new_id))
+    if not obj:
+        raise ValueError("knowledge_suggestion upsert failed")
+    db.flush()
+    return obj
+
+
+def list_knowledge_suggestions(
+    db: Session,
+    *,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    review_status: Optional[str] = None,  # pending/ingested/deleted
+    answer_status: Optional[str] = None,  # ok/error
+    session_id: Optional[int] = None,
+    channel: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> List[KnowledgeSuggestion]:
+    stmt = select(KnowledgeSuggestion)
+
+    dt_from, dt_to_excl = _dt_range_utc(date_from, date_to)
+    if dt_from:
+        stmt = stmt.where(KnowledgeSuggestion.created_at >= dt_from)
+    if dt_to_excl:
+        stmt = stmt.where(KnowledgeSuggestion.created_at < dt_to_excl)
+
+    if review_status:
+        stmt = stmt.where(KnowledgeSuggestion.review_status == review_status)
+    if answer_status:
+        stmt = stmt.where(KnowledgeSuggestion.answer_status == answer_status)
+    if session_id is not None:
+        stmt = stmt.where(KnowledgeSuggestion.session_id == int(session_id))
+
+    if channel:
+        stmt = stmt.join(
+            ChatSessionInsight,
+            ChatSessionInsight.session_id == KnowledgeSuggestion.session_id,
+        ).where(ChatSessionInsight.channel == channel)
+
+    stmt = (
+        stmt.order_by(KnowledgeSuggestion.created_at.desc()).offset(offset).limit(limit)
+    )
+    return db.execute(stmt).scalars().all()
+
+
+def count_knowledge_suggestions(
+    db: Session,
+    *,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    review_status: Optional[str] = None,
+    answer_status: Optional[str] = None,
+    session_id: Optional[int] = None,
+    channel: Optional[str] = None,
+) -> int:
+    stmt = select(func.count()).select_from(KnowledgeSuggestion)
+
+    dt_from, dt_to_excl = _dt_range_utc(date_from, date_to)
+    if dt_from:
+        stmt = stmt.where(KnowledgeSuggestion.created_at >= dt_from)
+    if dt_to_excl:
+        stmt = stmt.where(KnowledgeSuggestion.created_at < dt_to_excl)
+
+    if review_status:
+        stmt = stmt.where(KnowledgeSuggestion.review_status == review_status)
+    if answer_status:
+        stmt = stmt.where(KnowledgeSuggestion.answer_status == answer_status)
+    if session_id is not None:
+        stmt = stmt.where(KnowledgeSuggestion.session_id == int(session_id))
+
+    if channel:
+        stmt = stmt.join(
+            ChatSessionInsight,
+            ChatSessionInsight.session_id == KnowledgeSuggestion.session_id,
+        ).where(ChatSessionInsight.channel == channel)
+
+    return int(db.execute(stmt).scalar_one())
+
+
+def mark_knowledge_suggestion_ingested(
+    db: Session,
+    *,
+    message_id: int,
+    final_answer: str,
+    target_knowledge_id: int,
+    ingested_chunk_id: int,
+) -> KnowledgeSuggestion:
+    """
+    pending -> ingested (멱등)
+    - 이미 ingested면 그대로 반환
+    - deleted면 에러
+    """
+    obj = get_knowledge_suggestion_by_message(db, message_id)
+    if not obj:
+        raise ValueError(f"knowledge_suggestion not found for message_id={message_id}")
+
+    if obj.review_status == "ingested":
+        return obj
+    if obj.review_status == "deleted":
+        raise ValueError("cannot ingest a deleted suggestion")
+
+    fa = str(final_answer).strip()
+    if not fa:
+        raise ValueError("final_answer required")
+
+    obj.final_answer = fa
+    obj.target_knowledge_id = int(target_knowledge_id)
+    obj.ingested_chunk_id = int(ingested_chunk_id)
+    obj.ingested_at = datetime.now(timezone.utc)
+    obj.review_status = "ingested"
+
+    db.flush()
+    return obj
+
+
+def mark_knowledge_suggestion_deleted(
+    db: Session,
+    *,
+    message_id: int,
+) -> KnowledgeSuggestion:
+    """
+    pending -> deleted (멱등)
+    - 이미 deleted면 그대로 반환
+    - ingested면 에러
+    """
+    obj = get_knowledge_suggestion_by_message(db, message_id)
+    if not obj:
+        raise ValueError(f"knowledge_suggestion not found for message_id={message_id}")
+
+    if obj.review_status == "deleted":
+        return obj
+    if obj.review_status == "ingested":
+        raise ValueError("cannot delete an ingested suggestion")
+
+    obj.review_status = "deleted"
+    obj.deleted_at = datetime.now(timezone.utc)
+
+    db.flush()
+    return obj
 
 
 # =========================
@@ -325,7 +567,9 @@ def list_keyword_daily(
     if quick_category_id is not None:
         stmt = stmt.where(ChatKeywordDaily.quick_category_id == int(quick_category_id))
 
-    stmt = stmt.order_by(ChatKeywordDaily.count.desc(), ChatKeywordDaily.keyword.asc()).limit(int(top_n))
+    stmt = stmt.order_by(
+        ChatKeywordDaily.count.desc(), ChatKeywordDaily.keyword.asc()
+    ).limit(int(top_n))
     return db.execute(stmt).scalars().all()
 
 
@@ -338,9 +582,6 @@ def upsert_keyword_daily_set(
     channel: Optional[str] = None,
     quick_category_id: Optional[int] = None,
 ) -> None:
-    """
-    (dt, keyword, channel, quick_category_id) 유니크키 기준으로 count를 '설정' (재빌드/ETL에 적합)
-    """
     stmt = (
         pg_insert(ChatKeywordDaily)
         .values(
@@ -370,9 +611,6 @@ def upsert_keyword_daily_add(
     channel: Optional[str] = None,
     quick_category_id: Optional[int] = None,
 ) -> None:
-    """
-    (dt, keyword, channel, quick_category_id) 유니크키 기준으로 count를 '증가' (실시간 누적에 적합)
-    """
     delta_i = int(delta)
     stmt = (
         pg_insert(ChatKeywordDaily)
@@ -402,10 +640,9 @@ def delete_keyword_daily_range(
     channel: Optional[str] = None,
     quick_category_id: Optional[int] = None,
 ) -> int:
-    """
-    기간 재집계 전에 기존 집계 제거용.
-    """
-    q = db.query(ChatKeywordDaily).filter(ChatKeywordDaily.dt >= date_from, ChatKeywordDaily.dt <= date_to)
+    q = db.query(ChatKeywordDaily).filter(
+        ChatKeywordDaily.dt >= date_from, ChatKeywordDaily.dt <= date_to
+    )
     if channel:
         q = q.filter(ChatKeywordDaily.channel == channel)
     if quick_category_id is not None:
@@ -415,15 +652,26 @@ def delete_keyword_daily_range(
 
 
 __all__ = [
+    # session insight
     "get_session_insight",
     "ensure_session_insight",
     "upsert_session_insight",
     "list_session_insights",
     "count_session_insights",
+    # message insight
     "get_message_insight",
     "ensure_message_insight",
     "upsert_message_insight",
     "list_message_insights",
+    # knowledge suggestion
+    "get_knowledge_suggestion",
+    "get_knowledge_suggestion_by_message",
+    "upsert_pending_knowledge_suggestion",
+    "list_knowledge_suggestions",
+    "count_knowledge_suggestions",
+    "mark_knowledge_suggestion_ingested",
+    "mark_knowledge_suggestion_deleted",
+    # keyword daily
     "list_keyword_daily",
     "upsert_keyword_daily_set",
     "upsert_keyword_daily_add",
