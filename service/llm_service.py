@@ -33,6 +33,8 @@ log = logging.getLogger("api_cost")
 # category classification (rule -> (optional) embedding -> (optional) llm)
 # =========================================================
 _USE_QC_EMBEDDING: bool = bool(getattr(config, "CHAT_CATEGORY_USE_EMBEDDING", False))
+_DEFAULT_CHANNEL = "web"
+
 
 # 아주 가벼운 룰(초기버전). quick_category.name이 한글/영문 어떤 형태든 매칭되게 "후보 토큰"을 넓게 둠.
 _RULES: list[tuple[list[str], list[str]]] = [
@@ -110,11 +112,23 @@ def _fetch_quick_categories(db: Session) -> list[dict]:
     return list(rows)
 
 
-def _get_etc_quick_category_id(qcs: list[dict]) -> Optional[int]:
+def _get_etc_quick_category(qcs: list[dict]) -> tuple[Optional[int], Optional[str]]:
     for qc in qcs:
-        if str(qc.get("name", "")).strip().lower() == "etc":
-            return int(qc["id"])
-    return None
+        raw_name = str(qc.get("name", "")).strip()
+        name = raw_name.lower()
+        if name in {"etc", "기타"}:
+            return int(qc["id"]), raw_name
+    return None, None
+
+
+def _normalize_channel(channel: Optional[str]) -> str:
+    if channel is not None:
+        normalized = str(channel).strip().lower()
+        if normalized:
+            return normalized
+    return _DEFAULT_CHANNEL
+
+
 
 
 def _pick_qc_by_name_token(qcs: list[dict], name_tokens: list[str]) -> Optional[tuple[int, str]]:
@@ -155,7 +169,7 @@ def _classify_quick_category(
     if not qcs:
         return None, None
 
-    etc_id = _get_etc_quick_category_id(qcs)
+    etc_id, etc_name = _get_etc_quick_category(qcs)
 
     # 1) 룰 기반
     hay = (text or "").lower()
@@ -212,7 +226,7 @@ def _classify_quick_category(
     # -> fallback
 
     if etc_id is not None:
-        return etc_id, "etc"
+        return etc_id, etc_name or "etc"
     return None, None
 
 
@@ -258,9 +272,10 @@ def _record_user_message_and_update_insights(
     # 4) session_insight
     ins = crud_chat_history.ensure_session_insight(db, session_id=session_id)
 
+    normalized_channel = _normalize_channel(channel)
     # channel은 최초 1회만 세팅(있으면 유지)
-    if channel and not getattr(ins, "channel", None):
-        ins.channel = str(channel)
+    if normalized_channel and not getattr(ins, "channel", None):
+        ins.channel = str(normalized_channel)
 
     # question_count는 user 질문마다 +1
     current_q = int(getattr(ins, "question_count", 0) or 0)
@@ -292,10 +307,9 @@ def ask_in_session_service(db: Session, *, session_id: int, payload: ChatQAReque
     flags = _extract_policy_flags(payload)
     few_shot_profile: str = str(getattr(payload, "few_shot_profile", None) or "support_md")
 
-    # 운영 규칙: channel은 web/mobile 고정 코드로 저장(없으면 None 유지)
+    # 운영 규칙: channel은 web/mobile 고정 코드로 저장(없으면 web 기본값)
     channel: Optional[str] = getattr(payload, "channel", None)
-    if channel is not None:
-        channel = str(channel).strip().lower() or None
+    channel = _normalize_channel(channel)
 
     # Tx1) user message + insights (LLM 호출 전에 커밋되어야 runner가 히스토리 조회 가능)
     try:
@@ -354,11 +368,19 @@ def ask_in_session_service(db: Session, *, session_id: int, payload: ChatQAReque
                     "sources": _dump_sources(resp),
                     "source": "text",
                     "channel": channel,
+                    "status": resp.status,
+                    "reason_code": resp.reason_code,
+                    "citations": [c.model_dump() for c in resp.citations],
                 }
             ),
             commit=False,   # 여기서 바로 커밋하지 않고
             refresh=True,
         )
+        if resp.status != "ok":
+            ins = crud_chat_history.ensure_session_insight(db, session_id=session_id)
+            ins.status = "failed"
+            ins.failed_reason = resp.answer[:200]
+            db.add(ins)
         db.commit()        # 함수 레벨에서 확정
     except Exception:
         db.rollback()
@@ -496,11 +518,19 @@ def clova_stt_service(
                         "sources": _dump_sources(resp),
                         "source": "voice",
                         "lang": lang,
+                        "status": resp.status,
+                        "reason_code": resp.reason_code,
+                        "citations": [c.model_dump() for c in resp.citations],
                     }
                 ),
                 commit=False,
                 refresh=True,
             )
+            if resp.status != "ok":
+                ins = crud_chat_history.ensure_session_insight(db, session_id=session_id)
+                ins.status = "failed"
+                ins.failed_reason = resp.answer[:200]
+                db.add(ins)
 
     return resp
 
