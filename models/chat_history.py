@@ -45,7 +45,7 @@ class ChatSessionInsight(Base):
 
     status = Column(
         String(16), nullable=False, server_default="success"
-    )  # success/failed
+    )  # success/failed/commit
     first_question = Column(Text, nullable=True)
     question_count = Column(Integer, nullable=False, server_default="0")
     failed_reason = Column(Text, nullable=True)
@@ -65,7 +65,8 @@ class ChatSessionInsight(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('success','failed')", name="chk_chat_s_insight_status"
+            "status IN ('success','failed','commit')",
+            name="chk_chat_s_insight_status",
         ),
         CheckConstraint("question_count >= 0", name="chk_chat_s_insight_qcount_nonneg"),
         Index("idx_chat_s_insight_started_at", "started_at"),

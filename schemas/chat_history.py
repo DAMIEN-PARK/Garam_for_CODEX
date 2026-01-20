@@ -7,7 +7,7 @@ from typing import Optional, List, Literal, Any, Dict
 from pydantic import BaseModel, Field
 
 
-ChatInsightStatus = Literal["success", "failed"]
+ChatInsightStatus = Literal["success", "failed", "commit"]
 ChannelLiteral = Literal["web", "mobile"]
 
 # 최소 상태(확정)
