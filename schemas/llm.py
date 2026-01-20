@@ -66,6 +66,13 @@ class QASource(BaseModel):
     text: str = Field(default="")
 
 
+class QACitation(BaseModel):
+    knowledge_id: Optional[int] = None
+    chunk_id: Optional[int] = None
+    page_id: Optional[int] = None
+    score: Optional[float] = None
+
+
 class QAResponse(BaseModel):
     """
     QA 응답 표준.
@@ -77,6 +84,10 @@ class QAResponse(BaseModel):
     question: str
     answer: str
     session_id: Optional[int] = None
+
+    status: Literal["ok", "no_knowledge", "need_clarification"] = "ok"
+    reason_code: Optional[str] = None
+    citations: List[QACitation] = Field(default_factory=list)
 
     sources: List[QASource] = Field(default_factory=list)
     documents: List[QASource] = Field(default_factory=list)
