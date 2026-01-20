@@ -211,6 +211,13 @@ def _load_quick_category_name_map(db: Session) -> Dict[str, int]:
     return out
 
 
+def _get_etc_quick_category_id(name_map: Dict[str, int]) -> Optional[int]:
+    for key in ("etc", "기타"):
+        if key in name_map:
+            return int(name_map[key])
+    return None
+
+
 # =========================
 # Build / rebuild
 # =========================
@@ -241,7 +248,7 @@ def rebuild_range(db: Session, *, date_from: date, date_to: date) -> Dict[str, A
 
     # quick_category name->id 맵 + etc_id
     qc_name_map = _load_quick_category_name_map(db)
-    etc_id: Optional[int] = qc_name_map.get("etc")
+    etc_id = _get_etc_quick_category_id(qc_name_map)
 
     # 1) session_insight 업데이트
     updated_sessions = 0
