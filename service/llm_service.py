@@ -70,6 +70,39 @@ def _dump_sources(resp: QAResponse) -> list[dict]:
     return out
 
 
+def _record_failure_suggestion(
+    db: Session,
+    *,
+    session_id: int,
+    question_text: str,
+    assistant_message: Any,
+    resp: QAResponse,
+) -> None:
+    if getattr(resp, "status", None) == "ok":
+        return
+
+    message_id = getattr(assistant_message, "id", None) or getattr(
+        assistant_message, "message_id", None
+    )
+    if not message_id:
+        log.warning("knowledge_suggestion skipped: missing message_id")
+        return
+
+    try:
+        crud_chat_history.upsert_pending_knowledge_suggestion(
+            db,
+            session_id=session_id,
+            message_id=int(message_id),
+            question_text=question_text,
+            assistant_answer=resp.answer,
+            reason_code=resp.reason_code,
+            retrieval_meta=getattr(resp, "retrieval_meta", None),
+            answer_status="error",
+        )
+    except Exception:
+        log.exception("knowledge_suggestion upsert failed")
+
+
 def _extract_keywords_simple(text: str, *, max_items: int = 12) -> list[str]:
     """
     초기 버전: 형태소 분석기 없을 때도 동작하는 가벼운 키워드 추출.
@@ -351,7 +384,7 @@ def ask_in_session_service(db: Session, *, session_id: int, payload: ChatQAReque
 
     # Tx2) assistant message 기록
     try:
-        crud_chat.create_message(
+        msg = crud_chat.create_message(
             db,
             session_id=session_id,
             role="assistant",
@@ -370,6 +403,7 @@ def ask_in_session_service(db: Session, *, session_id: int, payload: ChatQAReque
                     "channel": channel,
                     "status": resp.status,
                     "reason_code": resp.reason_code,
+                    "retrieval_meta": getattr(resp, "retrieval_meta", None),
                     "citations": [c.model_dump() for c in resp.citations],
                 }
             ),
@@ -381,6 +415,13 @@ def ask_in_session_service(db: Session, *, session_id: int, payload: ChatQAReque
             ins.status = "failed"
             ins.failed_reason = resp.answer[:200]
             db.add(ins)
+            _record_failure_suggestion(
+                db,
+                session_id=session_id,
+                question_text=payload.question,
+                assistant_message=msg,
+                resp=resp,
+            )
         db.commit()        # 함수 레벨에서 확정
     except Exception:
         db.rollback()
@@ -501,7 +542,7 @@ def clova_stt_service(
 
     if session_id is not None:
         with db.begin():
-            crud_chat.create_message(
+            msg = crud_chat.create_message(
                 db,
                 session_id=session_id,
                 role="assistant",
@@ -520,6 +561,7 @@ def clova_stt_service(
                         "lang": lang,
                         "status": resp.status,
                         "reason_code": resp.reason_code,
+                        "retrieval_meta": getattr(resp, "retrieval_meta", None),
                         "citations": [c.model_dump() for c in resp.citations],
                     }
                 ),
@@ -531,6 +573,13 @@ def clova_stt_service(
                 ins.status = "failed"
                 ins.failed_reason = resp.answer[:200]
                 db.add(ins)
+                _record_failure_suggestion(
+                    db,
+                    session_id=session_id,
+                    question_text=text,
+                    assistant_message=msg,
+                    resp=resp,
+                )
 
     return resp
 
