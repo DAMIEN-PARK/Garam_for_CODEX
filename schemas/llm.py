@@ -1,7 +1,7 @@
 # schemas/llm.py
 from __future__ import annotations
 
-from typing import Optional, Literal, List
+from typing import Optional, Literal, List, Dict, Any
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
@@ -91,6 +91,7 @@ class QAResponse(BaseModel):
 
     sources: List[QASource] = Field(default_factory=list)
     documents: List[QASource] = Field(default_factory=list)
+    retrieval_meta: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="after")
     def _sync_sources_documents(self) -> "QAResponse":
