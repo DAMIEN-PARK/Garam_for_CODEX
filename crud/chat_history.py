@@ -23,6 +23,14 @@ log = logging.getLogger("chat_history")
 # =========================
 # Helpers
 # =========================
+def _infer_channel_from_session_title(title: Optional[str]) -> Optional[str]:
+    if not title:
+        return None
+    if str(title).strip() == "모바일 대화":
+        return "mobile"
+    return None
+
+
 def _dt_range_utc(
     date_from: Optional[date], date_to: Optional[date]
 ) -> Tuple[Optional[datetime], Optional[datetime]]:
@@ -53,6 +61,13 @@ def ensure_session_insight(db: Session, session_id: int) -> ChatSessionInsight:
     """
     obj = db.get(ChatSessionInsight, session_id)
     if obj:
+        if not getattr(obj, "channel", None):
+            sess = db.get(ChatSession, session_id)
+            inferred = _infer_channel_from_session_title(
+                getattr(sess, "title", None) if sess else None
+            )
+            if inferred:
+                obj.channel = inferred
         return obj
 
     sess = db.get(ChatSession, session_id)
@@ -62,6 +77,7 @@ def ensure_session_insight(db: Session, session_id: int) -> ChatSessionInsight:
     obj = ChatSessionInsight(
         session_id=session_id,
         started_at=sess.created_at,
+        channel=_infer_channel_from_session_title(getattr(sess, "title", None)),
         status="success",
         question_count=0,
     )
@@ -92,7 +108,8 @@ def upsert_session_insight(
         obj = ChatSessionInsight(
             session_id=session_id,
             started_at=started_at or sess.created_at,
-            channel=channel,
+            channel=channel
+            or _infer_channel_from_session_title(getattr(sess, "title", None)),
             category=category,
             quick_category_id=quick_category_id,
             status=status or "success",
@@ -108,6 +125,13 @@ def upsert_session_insight(
         obj.started_at = started_at
     if channel is not None:
         obj.channel = channel
+    elif not getattr(obj, "channel", None):
+        sess = db.get(ChatSession, session_id)
+        inferred = _infer_channel_from_session_title(
+            getattr(sess, "title", None) if sess else None
+        )
+        if inferred:
+            obj.channel = inferred
     if category is not None:
         obj.category = category
     if quick_category_id is not None:
