@@ -326,18 +326,6 @@ def _run_qa(
                     if entry:
                         citations.append(entry)
 
-    if not has_metadata and sources:
-        status_val = "ok"
-        reason_code = reason_code or "MISSING_METADATA"
-        citations = [
-            {
-                "chunk_id": getattr(sources[0], "chunk_id", None),
-                "knowledge_id": getattr(sources[0], "knowledge_id", None),
-                "page_id": getattr(sources[0], "page_id", None),
-                "score": None,
-            }
-        ]
-
     if status_val not in {"ok", "no_knowledge", "need_clarification"}:
         status_val = "no_knowledge"
         reason_code = reason_code or "INVALID_METADATA"
